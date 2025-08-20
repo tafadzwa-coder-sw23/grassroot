@@ -1,4 +1,3 @@
-const { SMA, EMA, RSI, MACD, BollingerBands } = require('technicalindicators');
 const axios = require('axios');
 
 class CHOCHDetector {
@@ -55,9 +54,13 @@ class CHOCHDetector {
     const swingHighs = this.findSwingPoints(highs, 'high');
     const swingLows = this.findSwingPoints(lows, 'low');
 
-    // Determine market structure
+    // Determine market structure using swings only
+    const trend = this.determineTrendFromSwings(swingHighs, swingLows);
+    const regime = trend === 'bullish' ? 'bullish_trend' : trend === 'bearish' ? 'bearish_trend' : 'ranging';
+
     const structure = {
-      trend: this.determineTrend(closes),
+      trend,
+      regime,
       higherHighs: this.countHigherHighs(swingHighs),
       lowerLows: this.countLowerLows(swingLows),
       breakOfStructure: this.detectBOS(swingHighs, swingLows),
@@ -86,7 +89,7 @@ class CHOCHDetector {
         swingPoints.push({
           index: i,
           price: current,
-          timestamp: Date.now() - (prices.length - i) * 60000 // Approximate
+          timestamp: Date.now() - (prices.length - i) * 60000
         });
       }
     }
@@ -94,23 +97,19 @@ class CHOCHDetector {
     return swingPoints;
   }
 
-  determineTrend(closes) {
-    const sma20 = SMA.calculate({ period: 20, values: closes });
-    const sma50 = SMA.calculate({ period: 50, values: closes });
-    
-    if (sma20.length === 0 || sma50.length === 0) return 'neutral';
-    
-    const currentSMA20 = sma20[sma20.length - 1];
-    const currentSMA50 = sma50[sma50.length - 1];
-    
-    if (currentSMA20 > currentSMA50) return 'bullish';
-    if (currentSMA20 < currentSMA50) return 'bearish';
+  determineTrendFromSwings(swingHighs, swingLows) {
+    const lookback = 5;
+    const hh = this.countHigherHighs(swingHighs.slice(-lookback));
+    const hl = this.countHigherLows(swingLows.slice(-lookback));
+    const lh = this.countLowerHighs(swingHighs.slice(-lookback));
+    const ll = this.countLowerLows(swingLows.slice(-lookback));
+    if (hh + hl >= 3 && hh >= 1 && hl >= 1) return 'bullish';
+    if (lh + ll >= 3 && lh >= 1 && ll >= 1) return 'bearish';
     return 'neutral';
   }
 
   countHigherHighs(swingHighs) {
     if (swingHighs.length < 2) return 0;
-    
     let count = 0;
     for (let i = 1; i < swingHighs.length; i++) {
       if (swingHighs[i].price > swingHighs[i-1].price) count++;
@@ -120,10 +119,27 @@ class CHOCHDetector {
 
   countLowerLows(swingLows) {
     if (swingLows.length < 2) return 0;
-    
     let count = 0;
     for (let i = 1; i < swingLows.length; i++) {
       if (swingLows[i].price < swingLows[i-1].price) count++;
+    }
+    return count;
+  }
+
+  countHigherLows(swingLows) {
+    if (swingLows.length < 2) return 0;
+    let count = 0;
+    for (let i = 1; i < swingLows.length; i++) {
+      if (swingLows[i].price > swingLows[i-1].price) count++;
+    }
+    return count;
+  }
+
+  countLowerHighs(swingHighs) {
+    if (swingHighs.length < 2) return 0;
+    let count = 0;
+    for (let i = 1; i < swingHighs.length; i++) {
+      if (swingHighs[i].price < swingHighs[i-1].price) count++;
     }
     return count;
   }
@@ -135,22 +151,18 @@ class CHOCHDetector {
       level: null
     };
 
-    // Check for bullish BOS (break above previous high)
     if (swingHighs.length >= 2) {
       const lastHigh = swingHighs[swingHighs.length - 1];
       const prevHigh = swingHighs[swingHighs.length - 2];
-      
       if (lastHigh.price > prevHigh.price) {
         breakOfStructure.bullish = true;
         breakOfStructure.level = lastHigh.price;
       }
     }
 
-    // Check for bearish BOS (break below previous low)
     if (swingLows.length >= 2) {
       const lastLow = swingLows[swingLows.length - 1];
       const prevLow = swingLows[swingLows.length - 2];
-      
       if (lastLow.price < prevLow.price) {
         breakOfStructure.bearish = true;
         breakOfStructure.level = lastLow.price;
@@ -167,22 +179,18 @@ class CHOCHDetector {
       level: null
     };
 
-    // Check for bullish CHOCH (break above previous lower high)
     if (swingHighs.length >= 3) {
       const lastHigh = swingHighs[swingHighs.length - 1];
       const prevHigh = swingHighs[swingHighs.length - 2];
-      
       if (lastHigh.price > prevHigh.price) {
         changeOfCharacter.bullish = true;
         changeOfCharacter.level = lastHigh.price;
       }
     }
 
-    // Check for bearish CHOCH (break below previous higher low)
     if (swingLows.length >= 3) {
       const lastLow = swingLows[swingLows.length - 1];
       const prevLow = swingLows[swingLows.length - 2];
-      
       if (lastLow.price < prevLow.price) {
         changeOfCharacter.bearish = true;
         changeOfCharacter.level = lastLow.price;
@@ -195,60 +203,33 @@ class CHOCHDetector {
   identifyLiquidityLevels(data) {
     const highs = data.map(d => d.high);
     const lows = data.map(d => d.low);
-    
-    const liquidityLevels = {
-      buySide: [],
-      sellSide: []
-    };
-
-    // Identify buy-side liquidity (below current price)
+    const liquidityLevels = { buySide: [], sellSide: [] };
     const supportLevels = this.findSupportLevels(lows);
-    liquidityLevels.buySide = supportLevels.map(level => ({
-      level,
-      type: 'support',
-      strength: this.calculateLiquidityStrength(level, lows)
-    }));
-
-    // Identify sell-side liquidity (above current price)
+    liquidityLevels.buySide = supportLevels.map(level => ({ level, type: 'support', strength: this.calculateLiquidityStrength(level, lows) }));
     const resistanceLevels = this.findResistanceLevels(highs);
-    liquidityLevels.sellSide = resistanceLevels.map(level => ({
-      level,
-      type: 'resistance',
-      strength: this.calculateLiquidityStrength(level, highs)
-    }));
-
+    liquidityLevels.sellSide = resistanceLevels.map(level => ({ level, type: 'resistance', strength: this.calculateLiquidityStrength(level, highs) }));
     return liquidityLevels;
   }
 
   findSupportLevels(lows) {
     const levels = [];
-    const threshold = 0.001; // 0.1% threshold
-    
+    const threshold = 0.001;
     for (let i = 0; i < lows.length; i++) {
       const level = lows[i];
       const isUnique = !levels.some(l => Math.abs(l - level) / level < threshold);
-      
-      if (isUnique) {
-        levels.push(level);
-      }
+      if (isUnique) levels.push(level);
     }
-    
     return levels.sort((a, b) => b - a).slice(0, 5);
   }
 
   findResistanceLevels(highs) {
     const levels = [];
     const threshold = 0.001;
-    
     for (let i = 0; i < highs.length; i++) {
       const level = highs[i];
       const isUnique = !levels.some(l => Math.abs(l - level) / level < threshold);
-      
-      if (isUnique) {
-        levels.push(level);
-      }
+      if (isUnique) levels.push(level);
     }
-    
     return levels.sort((a, b) => a - b).slice(0, 5);
   }
 
@@ -259,163 +240,76 @@ class CHOCHDetector {
 
   detectOrderBlocks(data) {
     const orderBlocks = [];
-    
     for (let i = 2; i < data.length - 2; i++) {
       const current = data[i];
-      const prev = data[i-1];
       const next = data[i+1];
-      
-      // Bullish order block (down candle followed by strong up move)
-      if (current.close < current.open && 
-          next.close > next.open && 
-          next.close > current.high) {
-        orderBlocks.push({
-          type: 'bullish',
-          level: current.low,
-          timestamp: current.timestamp,
-          strength: Math.abs(next.close - current.close) / current.close
-        });
+      if (current.close < current.open && next.close > next.open && next.close > current.high) {
+        orderBlocks.push({ type: 'bullish', level: current.low, timestamp: current.timestamp, strength: Math.abs(next.close - current.close) / current.close });
       }
-      
-      // Bearish order block (up candle followed by strong down move)
-      if (current.close > current.open && 
-          next.close < next.open && 
-          next.close < current.low) {
-        orderBlocks.push({
-          type: 'bearish',
-          level: current.high,
-          timestamp: current.timestamp,
-          strength: Math.abs(next.close - current.close) / current.close
-        });
+      if (current.close > current.open && next.close < next.open && next.close < current.low) {
+        orderBlocks.push({ type: 'bearish', level: current.high, timestamp: current.timestamp, strength: Math.abs(next.close - current.close) / current.close });
       }
     }
-    
     return orderBlocks;
   }
 
   detectFairValueGaps(data) {
     const gaps = [];
-    
     for (let i = 1; i < data.length; i++) {
       const current = data[i];
       const previous = data[i-1];
-      
-      // Bullish FVG (current low > previous high)
       if (current.low > previous.high) {
-        gaps.push({
-          type: 'bullish',
-          top: previous.high,
-          bottom: current.low,
-          midpoint: (previous.high + current.low) / 2,
-          timestamp: current.timestamp
-        });
+        gaps.push({ type: 'bullish', top: previous.high, bottom: current.low, midpoint: (previous.high + current.low) / 2, timestamp: current.timestamp });
       }
-      
-      // Bearish FVG (current high < previous low)
       if (current.high < previous.low) {
-        gaps.push({
-          type: 'bearish',
-          top: current.high,
-          bottom: previous.low,
-          midpoint: (current.high + previous.low) / 2,
-          timestamp: current.timestamp
-        });
+        gaps.push({ type: 'bearish', top: current.high, bottom: previous.low, midpoint: (current.high + previous.low) / 2, timestamp: current.timestamp });
       }
     }
-    
     return gaps;
   }
 
   detectBreakerBlocks(data) {
     const breakerBlocks = [];
     const orderBlocks = this.detectOrderBlocks(data);
-    
     for (const ob of orderBlocks) {
       const isMitigated = this.checkMitigation(ob, data);
       if (isMitigated) {
-        breakerBlocks.push({
-          ...ob,
-          type: ob.type === 'bullish' ? 'bearish' : 'bullish',
-          status: 'breaker'
-        });
+        breakerBlocks.push({ ...ob, type: ob.type === 'bullish' ? 'bearish' : 'bullish', status: 'breaker' });
       }
     }
-    
     return breakerBlocks;
   }
 
   analyzeMitigation(data) {
-    const mitigation = {
-      levels: [],
-      status: 'active'
-    };
-    
+    const mitigation = { levels: [], status: 'active' };
     const orderBlocks = this.detectOrderBlocks(data);
-    const fairValueGaps = this.detectFairValueGaps(data);
-    
     for (const ob of orderBlocks) {
       const isMitigated = this.checkMitigation(ob, data);
-      mitigation.levels.push({
-        type: ob.type,
-        level: ob.level,
-        mitigated: isMitigated,
-        timestamp: ob.timestamp
-      });
+      mitigation.levels.push({ type: ob.type, level: ob.level, mitigated: isMitigated, timestamp: ob.timestamp });
     }
-    
     return mitigation;
   }
 
   checkMitigation(orderBlock, data) {
     const relevantData = data.filter(d => d.timestamp > orderBlock.timestamp);
-    
     for (const candle of relevantData) {
-      if (orderBlock.type === 'bullish' && candle.low <= orderBlock.level) {
-        return true;
-      }
-      
-      if (orderBlock.type === 'bearish' && candle.high >= orderBlock.level) {
-        return true;
-      }
+      if (orderBlock.type === 'bullish' && candle.low <= orderBlock.level) return true;
+      if (orderBlock.type === 'bearish' && candle.high >= orderBlock.level) return true;
     }
-    
     return false;
   }
 
   calculateConfidenceScore(analysis) {
-    let score = 0.5; // Base score
-    
-    // Market structure score
-    if (analysis.marketStructure.trend !== 'neutral') {
-      score += 0.1;
-    }
-    
-    if (analysis.marketStructure.breakOfStructure.bullish || 
-        analysis.marketStructure.breakOfStructure.bearish) {
-      score += 0.15;
-    }
-    
-    if (analysis.marketStructure.changeOfCharacter.bullish || 
-        analysis.marketStructure.changeOfCharacter.bearish) {
-      score += 0.2;
-    }
-    
-    // Order blocks score
-    if (analysis.orderBlocks && analysis.orderBlocks.length > 0) {
-      score += 0.1;
-    }
-    
-    // Fair value gaps score
-    if (analysis.fairValueGaps && analysis.fairValueGaps.length > 0) {
-      score += 0.05;
-    }
-    
+    let score = 0.5;
+    if (analysis.marketStructure.trend !== 'neutral') score += 0.1;
+    if (analysis.marketStructure.breakOfStructure.bullish || analysis.marketStructure.breakOfStructure.bearish) score += 0.15;
+    if (analysis.marketStructure.changeOfCharacter.bullish || analysis.marketStructure.changeOfCharacter.bearish) score += 0.2;
+    if (analysis.orderBlocks && analysis.orderBlocks.length > 0) score += 0.1;
+    if (analysis.fairValueGaps && analysis.fairValueGaps.length > 0) score += 0.05;
     return Math.min(score, 1.0);
   }
 
   async storeAnalysis(analysis) {
-    // This would typically store to database
-    // For now, we'll just log it
     console.log(`CHOCH Analysis stored for ${analysis.symbol} ${analysis.timeframe}`);
   }
 
@@ -427,6 +321,7 @@ class CHOCHDetector {
       patterns: [],
       marketStructure: {
         trend: 'neutral',
+        regime: 'ranging',
         higherHighs: 0,
         lowerLows: 0,
         breakOfStructure: { bullish: false, bearish: false },

@@ -1,0 +1,6 @@
+PORT=3001
+WS_PORT=8081
+DERIV_TOKEN=your_deriv_api_token
+DERIV_APP_ID=12345
+
+

@@ -1,33 +1,77 @@
 const axios = require('axios');
+const WebSocket = require('ws');
 
 class MarketDataService {
   constructor() {
     this.baseURL = 'https://api.deriv.com';
-    this.wsURL = 'https://ws.derivws.com/websockets/v3';
+    this.wsURL = 'wss://ws.derivws.com/websockets/v3';
     this.token = null;
     this.appId = null;
     this.activeSymbols = [];
+    this.api = null;
   }
 
   async initialize(token, appId) {
     this.token = token;
     this.appId = appId;
-    console.log('MarketDataService initialized with Deriv API');
+    try {
+      if (!this.token || !this.appId) {
+        console.warn('Deriv API credentials not set. Using public websocket endpoints.');
+      }
+      console.log('MarketDataService initialized');
+    } catch (e) {
+      console.error('Initialization error:', e.message);
+    }
+  }
+
+  sendWSRequest(payload) {
+    return new Promise((resolve, reject) => {
+      const ws = new WebSocket(`${this.wsURL}?app_id=${this.appId}`, undefined, {
+        headers: { Origin: 'https://localhost' }
+      });
+      let resolved = false;
+      let authorized = !this.token; // if no token, skip auth
+      ws.on('open', () => {
+        try {
+          if (this.token) {
+            ws.send(JSON.stringify({ authorize: this.token }));
+          } else {
+            ws.send(JSON.stringify(payload));
+          }
+        } catch (e) { reject(e); }
+      });
+      ws.on('message', (msg) => {
+        try {
+          const data = JSON.parse(msg.toString());
+          if (data.error) {
+            reject(new Error(data.error.message));
+          } else {
+            // if we just authorized, send the real payload next
+            if (!authorized && (data.authorize || data.msg_type === 'authorize')) {
+              authorized = true;
+              ws.send(JSON.stringify(payload));
+              return;
+            }
+            resolved = true;
+            resolve(data);
+          }
+        } catch (e) {
+          reject(e);
+        } finally {
+          try { ws.close(); } catch {}
+        }
+      });
+      ws.on('error', (err) => { if (!resolved) reject(err); });
+      ws.on('close', () => {});
+    });
   }
 
   async getAllSymbols() {
     try {
-      // Use full active symbols to get complete catalog including all markets
-      const response = await axios.post(`${this.wsURL}?app_id=${this.appId}`, {
-        active_symbols: "full",
-        product_type: "basic"
-      });
-
-      if (response.data.error) {
-        throw new Error(response.data.error.message);
-      }
-
-      const symbols = response.data.active_symbols || [];
+      let symbols = [];
+      const resp = await this.sendWSRequest({ active_symbols: 'full', product_type: 'basic' });
+      const { active_symbols } = resp || {};
+      symbols = active_symbols || [];
       
       // Filter and categorize symbols based on the provided list
       const categorizedSymbols = symbols.map(symbol => ({
@@ -160,19 +204,15 @@ class MarketDataService {
 
   async getMarketData(symbol, timeframe, limit = 100) {
     try {
-      const response = await axios.post(`${this.wsURL}?app_id=${this.appId}`, {
-        ticks_history: symbol,
-        style: "candles",
+      const normalized = MarketDataService.normalizeSymbol(symbol);
+      const resp = await this.sendWSRequest({
+        ticks_history: normalized,
+        style: 'candles',
         granularity: this.getGranularity(timeframe),
         count: limit,
-        end: "latest"
+        end: 'latest'
       });
-
-      if (response.data.error) {
-        throw new Error(response.data.error.message);
-      }
-
-      const candles = response.data.candles || [];
+      const candles = resp?.candles || [];
       return candles.map(candle => ({
         timestamp: candle.epoch,
         open: candle.open,
@@ -187,6 +227,11 @@ class MarketDataService {
     }
   }
 
+  async getActiveSymbols() {
+    // Return a small, common set to drive scheduled analysis
+    return ['frxEURUSD', 'frxGBPUSD', 'frxUSDJPY'];
+  }
+
   getGranularity(timeframe) {
     const granularities = {
       '1m': 60,
@@ -197,6 +242,18 @@ class MarketDataService {
       '1d': 86400
     };
     return granularities[timeframe] || 300;
+  }
+
+  // Map user-friendly symbols (e.g., EURUSD) to Deriv codes (e.g., frxEURUSD)
+  static normalizeSymbol(userSymbol) {
+    if (!userSymbol) return userSymbol;
+    const upper = userSymbol.toUpperCase();
+    if (/^[A-Z]{6}$/.test(upper)) {
+      // Assume forex pair like EURUSD
+      return `frx${upper.slice(0,3)}/${upper.slice(3)}`.replace('/', '');
+    }
+    // Already a Deriv code or synthetic
+    return userSymbol;
   }
 
   getFallbackSymbols() {

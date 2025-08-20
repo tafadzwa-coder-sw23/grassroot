@@ -1,6 +1,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { TrendingUp, TrendingDown, BarChart3 } from "lucide-react";
+import { TrendingUp, TrendingDown, BarChart3, Activity, AlertTriangle } from "lucide-react";
+import { useTradingData } from "@/hooks/useTradingData";
 
 interface TradingChartProps {
   symbol: string;
@@ -8,30 +9,74 @@ interface TradingChartProps {
 }
 
 export const TradingChart = ({ symbol, strategy }: TradingChartProps) => {
-  // Mock chart data visualization
-  const generateMockBars = () => {
-    const bars = [];
-    let price = 1.0892;
+  const {
+    marketData,
+    currentPrice,
+    priceChange,
+    chochAnalysis,
+    riskAnalysis,
+    isLoading,
+    error,
+    connectionStatus
+  } = useTradingData(symbol, strategy);
+
+  // Generate candlestick data from market data
+  const generateCandlesticks = () => {
+    if (!marketData || marketData.length === 0) return [];
     
-    for (let i = 0; i < 50; i++) {
-      const change = (Math.random() - 0.5) * 0.002;
-      price += change;
-      const isGreen = change > 0;
-      
-      bars.push({
+    return marketData.slice(-50).map((candle, i) => ({
         x: i * 8,
-        height: Math.abs(change * 10000) + 5,
-        color: isGreen ? "#22c55e" : "#ef4444",
-        price: price.toFixed(5)
-      });
-    }
-    
-    return bars;
+      open: candle.open,
+      high: candle.high,
+      low: candle.low,
+      close: candle.close,
+      volume: candle.volume,
+      timestamp: candle.timestamp,
+      isGreen: candle.close >= candle.open
+    }));
   };
 
-  const mockBars = generateMockBars();
-  const currentPrice = mockBars[mockBars.length - 1]?.price || "1.0892";
-  const isUptrend = Math.random() > 0.5;
+  const candlesticks = generateCandlesticks();
+  const isUptrend = priceChange >= 0;
+
+  if (isLoading) {
+    return (
+      <Card className="h-[500px]">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Activity className="w-5 h-5 animate-spin" />
+            Loading Chart...
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="flex items-center justify-center h-[400px]">
+          <div className="text-center">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-4"></div>
+            <p className="text-muted-foreground">Loading market data...</p>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (error) {
+    return (
+      <Card className="h-[500px]">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-red-600">
+            <AlertTriangle className="w-5 h-5" />
+            Chart Error
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="flex items-center justify-center h-[400px]">
+          <div className="text-center">
+            <AlertTriangle className="w-12 h-12 text-red-500 mx-auto mb-4" />
+            <p className="text-red-600 mb-2">{error}</p>
+            <p className="text-sm text-muted-foreground">Unable to load chart data</p>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
 
   return (
     <Card className="h-[500px]">
@@ -45,18 +90,26 @@ export const TradingChart = ({ symbol, strategy }: TradingChartProps) => {
             <Badge variant="outline" className="text-blue-600 border-blue-600">
               {strategy.replace('-', ' ').toUpperCase()}
             </Badge>
+            <Badge 
+              variant={connectionStatus === 'connected' ? 'default' : 'destructive'}
+              className="text-xs"
+            >
+              {connectionStatus === 'connected' ? 'Live' : 'Offline'}
+            </Badge>
+            {currentPrice && (
             <div className="text-right">
-              <div className="text-lg font-bold">{currentPrice}</div>
+                <div className="text-lg font-bold">{currentPrice.toFixed(5)}</div>
               <div className={`text-sm flex items-center gap-1 ${isUptrend ? 'text-green-600' : 'text-red-600'}`}>
                 {isUptrend ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
-                {isUptrend ? '+' : '-'}0.{Math.floor(Math.random() * 100)}%
+                  {isUptrend ? '+' : ''}{priceChange.toFixed(2)}%
+                </div>
               </div>
-            </div>
+            )}
           </div>
         </div>
       </CardHeader>
       <CardContent className="p-0 h-[400px] relative overflow-hidden">
-        {/* Mock Chart Visualization */}
+        {/* Chart Visualization */}
         <div className="absolute inset-0 bg-gradient-to-b from-background to-muted/20">
           <svg width="100%" height="100%" className="absolute inset-0">
             {/* Grid lines */}
@@ -73,38 +126,84 @@ export const TradingChart = ({ symbol, strategy }: TradingChartProps) => {
               />
             ))}
             
-            {/* Price bars */}
-            {mockBars.map((bar, i) => (
+            {/* Candlesticks */}
+            {candlesticks.map((candle, i) => {
+              const bodyHeight = Math.abs(candle.close - candle.open) * 1000;
+              const bodyY = 200 - (bodyHeight / 2);
+              const wickHeight = (candle.high - candle.low) * 1000;
+              const wickY = 200 - (wickHeight / 2);
+              
+              return (
+                <g key={i}>
+                  {/* Wick */}
+                  <line
+                    x1={candle.x + 3}
+                    y1={200 - (candle.high - currentPrice!) * 1000}
+                    x2={candle.x + 3}
+                    y2={200 - (candle.low - currentPrice!) * 1000}
+                    stroke={candle.isGreen ? "#22c55e" : "#ef4444"}
+                    strokeWidth="1"
+                  />
+                  {/* Body */}
               <rect
-                key={i}
-                x={bar.x}
-                y={200 - bar.height}
-                width="6"
-                height={bar.height}
-                fill={bar.color}
+                    x={candle.x + 1}
+                    y={bodyY}
+                    width="4"
+                    height={Math.max(bodyHeight, 2)}
+                    fill={candle.isGreen ? "#22c55e" : "#ef4444"}
                 opacity="0.8"
               />
-            ))}
+                </g>
+              );
+            })}
             
             {/* Trend line */}
+            {candlesticks.length > 1 && (
             <polyline
-              points={mockBars.map((bar, i) => `${bar.x + 3},${200 - bar.height / 2}`).join(' ')}
+                points={candlesticks.map((candle, i) => `${candle.x + 3},${200 - (candle.close - currentPrice!) * 1000}`).join(' ')}
               fill="none"
               stroke="hsl(var(--primary))"
               strokeWidth="2"
               opacity="0.6"
             />
+            )}
           </svg>
           
+          {/* CHOCH Analysis Overlay */}
+          {chochAnalysis && (
+            <div className="absolute top-4 left-4 space-y-2">
+              <Badge className="bg-blue-500 text-white">
+                CHOCH Score: {chochAnalysis.score.toFixed(2)}
+              </Badge>
+              <Badge className="bg-purple-500 text-white">
+                {chochAnalysis.marketStructure.trend}
+              </Badge>
+            </div>
+          )}
+          
+          {/* Risk Analysis Overlay */}
+          {riskAnalysis && (
+            <div className="absolute top-4 right-4 space-y-2">
+              <Badge 
+                variant={riskAnalysis.riskScore < 0.3 ? 'default' : riskAnalysis.riskScore < 0.6 ? 'secondary' : 'destructive'}
+              >
+                Risk: {riskAnalysis.riskScore.toFixed(2)}
+              </Badge>
+              <Badge variant="outline">
+                Vol: {riskAnalysis.volatility.classification}
+              </Badge>
+            </div>
+          )}
+          
           {/* Signal indicators */}
-          <div className="absolute top-4 left-4">
+          <div className="absolute bottom-4 left-4">
             <Badge className="bg-green-500 text-white">
-              BUY Signal Active
+              ML Signals Active
             </Badge>
           </div>
           
           <div className="absolute bottom-4 right-4 text-xs text-muted-foreground">
-            Real-time market simulation • Data refreshes every 1s
+            Real-time market data • CHOCH + ML analysis
           </div>
         </div>
       </CardContent>

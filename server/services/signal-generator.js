@@ -1,11 +1,14 @@
-const { SMA, EMA, RSI, MACD, Stochastic } = require('technicalindicators');
 const MLRegression = require('ml-regression');
+const SMCStrategy = require('./smc-strategy');
+const CRTDetector = require('./crt-detector');
 
 class SignalGenerator {
   constructor() {
     this.model = null;
-    this.features = ['rsi', 'macd', 'stochastic', 'volume', 'price_action'];
+    this.features = ['returns', 'volatility', 'swing_features'];
     this.scaler = null;
+    this.smc = new SMCStrategy();
+    this.crt = new CRTDetector();
   }
 
   async generateSignals({ symbol, timeframe, marketData, chochAnalysis, riskManager }) {
@@ -14,17 +17,15 @@ class SignalGenerator {
         throw new Error('Insufficient market data for signal generation');
       }
 
-      // Prepare technical indicators
-      const indicators = this.calculateIndicators(marketData);
-      
-      // Generate CHOCH-based signals
+      // Price-action only
       const chochSignals = this.generateCHOCHSignals(chochAnalysis, marketData);
-      
-      // Generate technical signals
-      const technicalSignals = this.generateTechnicalSignals(indicators, marketData);
+      const technicalSignals = this.generatePriceActionSignals(marketData, chochAnalysis?.marketStructure?.regime);
+      const smcSignals = await this.smc.generateSMCSignals({ symbol, marketDataService: require('./market-data') instanceof Function ? new (require('./market-data'))() : null });
       
       // Combine signals using ML model
-      const mlSignals = await this.generateMLSignals(marketData, indicators, chochAnalysis);
+      const mlSignals = await this.generateMLSignals(marketData, chochAnalysis);
+      const crtSignals = await this.crt.generateCRTSignals?.({ symbol, timeframe })
+        ?? await this.crt.detect(symbol, new (require('./market-data'))());
       
       // Risk assessment
       const riskAssessment = await riskManager.analyzeRisk(symbol, marketData);
@@ -33,7 +34,9 @@ class SignalGenerator {
       const combinedSignals = this.combineSignals([
         ...chochSignals,
         ...technicalSignals,
-        ...mlSignals
+        ...mlSignals,
+        ...(smcSignals || []),
+        ...(crtSignals || [])
       ], riskAssessment);
 
       // Filter by confidence and risk
@@ -150,7 +153,7 @@ class SignalGenerator {
     return signals;
   }
 
-  generateTechnicalSignals(indicators, marketData) {
+  generateTechnicalSignals(indicators, marketData, regime = 'ranging') {
     const signals = [];
     const latestPrice = marketData[marketData.length - 1].close;
     
@@ -161,8 +164,8 @@ class SignalGenerator {
     const latestSMA20 = indicators.sma20[indicators.sma20.length - 1];
     const latestSMA50 = indicators.sma50[indicators.sma50.length - 1];
 
-    // RSI signals
-    if (latestRSI < 30) {
+    // RSI signals (prefer mean-reversion only in ranging regime)
+    if (regime === 'ranging' && latestRSI < 30) {
       signals.push({
         type: 'RSI_OVERSOLD',
         direction: 'BUY',
@@ -177,7 +180,7 @@ class SignalGenerator {
       });
     }
 
-    if (latestRSI > 70) {
+    if (regime === 'ranging' && latestRSI > 70) {
       signals.push({
         type: 'RSI_OVERBOUGHT',
         direction: 'SELL',
@@ -192,8 +195,8 @@ class SignalGenerator {
       });
     }
 
-    // Moving average crossover
-    if (latestSMA20 && latestSMA50) {
+    // Moving average crossover (prefer only in trending regimes)
+    if (latestSMA20 && latestSMA50 && regime !== 'ranging') {
       const prevSMA20 = indicators.sma20[indicators.sma20.length - 2];
       const prevSMA50 = indicators.sma50[indicators.sma50.length - 2];
 
@@ -231,6 +234,48 @@ class SignalGenerator {
     return signals;
   }
 
+  generatePriceActionSignals(marketData, regime = 'ranging') {
+    const signals = [];
+    if (!marketData || marketData.length < 10) return signals;
+    const last = marketData[marketData.length - 1];
+    const prev = marketData[marketData.length - 2];
+    const swingRange = Math.max(1e-9, last.high - last.low);
+    const momUp = last.close > prev.close && (last.close - prev.close) / swingRange > 0.2;
+    const momDn = last.close < prev.close && (prev.close - last.close) / swingRange > 0.2;
+
+    if (regime !== 'ranging' && momUp) {
+      signals.push({
+        type: 'PA_MOMENTUM',
+        direction: 'BUY',
+        entryPrice: last.close,
+        stopLoss: last.low,
+        takeProfit: last.close * 1.01,
+        confidence: 0.65,
+        timeframe: 'current',
+        chochPattern: 'pa_momentum',
+        riskReward: 2.0,
+        marketCondition: regime
+      });
+    }
+
+    if (regime !== 'ranging' && momDn) {
+      signals.push({
+        type: 'PA_MOMENTUM',
+        direction: 'SELL',
+        entryPrice: last.close,
+        stopLoss: last.high,
+        takeProfit: last.close * 0.99,
+        confidence: 0.65,
+        timeframe: 'current',
+        chochPattern: 'pa_momentum',
+        riskReward: 2.0,
+        marketCondition: regime
+      });
+    }
+
+    return signals;
+  }
+
   async generateMLSignals(marketData, indicators, chochAnalysis) {
     const signals = [];
     
@@ -246,7 +291,16 @@ class SignalGenerator {
       }
 
       // Make prediction
-      const prediction = await this.predict(features[features.length - 1]);
+      let prediction = await this.predict(features[features.length - 1]);
+      
+      // Regime-aware adjustment: bias prediction confidence in direction of regime
+      const regime = chochAnalysis?.marketStructure?.regime;
+      if (regime && prediction.direction !== 'HOLD') {
+        const align = (regime === 'bullish_trend' && prediction.direction === 'BUY') ||
+                      (regime === 'bearish_trend' && prediction.direction === 'SELL');
+        if (align) prediction = { ...prediction, confidence: Math.min(1, prediction.confidence + 0.15) };
+        if (!align && regime !== 'ranging') prediction = { ...prediction, confidence: Math.max(0, prediction.confidence - 0.15) };
+      }
       
       if (prediction.confidence > 0.6) {
         const latestPrice = marketData[marketData.length - 1].close;
@@ -275,6 +329,8 @@ class SignalGenerator {
     const features = [];
     
     for (let i = 50; i < marketData.length; i++) {
+      const regime = chochAnalysis?.marketStructure?.regime || 'ranging';
+      const regimeNumeric = regime === 'bullish_trend' ? 1 : regime === 'bearish_trend' ? -1 : 0;
       const feature = {
         rsi: indicators.rsi[i] || 50,
         macd: indicators.macd[i]?.MACD || 0,
@@ -283,7 +339,8 @@ class SignalGenerator {
         price_change: (marketData[i].close - marketData[i-1].close) / marketData[i-1].close,
         choch_score: chochAnalysis.score,
         trend: indicators.sma20[i] > indicators.sma50[i] ? 1 : 0,
-        volatility: (marketData[i].high - marketData[i].low) / marketData[i].close
+        volatility: (marketData[i].high - marketData[i].low) / marketData[i].close,
+        regime: regimeNumeric
       };
       
       features.push(feature);
@@ -303,7 +360,8 @@ class SignalGenerator {
         f.price_change,
         f.choch_score,
         f.trend,
-        f.volatility
+        f.volatility,
+        f.regime
       ]);
       
       const y = features.map(f => f.price_change > 0 ? 1 : 0);
