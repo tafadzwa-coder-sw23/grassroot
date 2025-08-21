@@ -26,6 +26,11 @@ import {
 
 const navigationItems = [
   {
+    title: "Trading",
+    url: "/trading",
+    icon: Activity,
+  },
+  {
     title: "Trading Dashboard",
     url: createPageUrl("TradingDashboard"),
     icon: BarChart3,

@@ -138,34 +138,33 @@ export const useTradingData = (symbol: string, strategy: string) => {
     
     // Wait for connection to establish
     const connectTimeout = setTimeout(() => {
-      const ready = tradingAPI.getWebSocketReadyState();
-      if (ready === WebSocket.OPEN) {
+      if (tradingAPI.isConnected()) {
         setConnectionStatus('connected');
         
         const timeframe = getTimeframe(strategy);
         tradingAPI.subscribeToSymbol(symbol, timeframe);
         
         // Set up message handlers
-        tradingAPI.onMessage('new_signals', (data: any) => {
-          if (data.symbol === symbol) {
+        tradingAPI.onMessage((data: any) => {
+          if (data.type === 'new_signals' && data.symbol === symbol) {
             setSignals(prev => [...prev, ...data.signals]);
           }
         });
         
-        tradingAPI.onMessage('market_data', (data: any) => {
-          if (data.symbol === symbol) {
+        tradingAPI.onMessage((data: any) => {
+          if (data.type === 'market_data' && data.symbol === symbol) {
             setMarketData(data.data);
           }
         });
         
-        tradingAPI.onMessage('choch_analysis', (data: any) => {
-          if (data.symbol === symbol) {
+        tradingAPI.onMessage((data: any) => {
+          if (data.type === 'choch_analysis' && data.symbol === symbol) {
             setChochAnalysis(data.analysis);
           }
         });
         
-        tradingAPI.onMessage('risk_analysis', (data: any) => {
-          if (data.symbol === symbol) {
+        tradingAPI.onMessage((data: any) => {
+          if (data.type === 'risk_analysis' && data.symbol === symbol) {
             setRiskAnalysis(data.analysis);
           }
         });

@@ -1,9 +1,10 @@
 require('dotenv').config();
 const express = require('express');
+const http = require('http');
+const WebSocket = require('ws');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
-const WebSocket = require('ws');
 const axios = require('axios');
 const cron = require('node-cron');
 const Database = require('./database');
@@ -15,8 +16,10 @@ const WebSocketService = require('./services/websocket-service');
 const { z } = require('zod');
 
 const app = express();
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ server });  // Use the same server for WebSocket
+
 const port = Number(process.env.PORT) || 3001;
-const wsPort = Number(process.env.WS_PORT) || 8081;
 
 // Initialize services
 const db = new Database();
@@ -35,16 +38,22 @@ let analysisEnabled = false;
 
 // Middleware
 app.use(helmet());
-app.use(cors({ origin: process.env.CORS_ORIGIN?.split(',') || true }));
+app.use(cors({
+  origin: ['http://localhost:8080', 'http://localhost:3000'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
+}));
+app.options('*', cors());
 app.use(rateLimit({ windowMs: 60 * 1000, max: 120 }));
 app.use(express.json());
+
 // Health/Readiness endpoints
 app.get('/healthz', (req, res) => {
   res.json({
     status: 'ok',
     uptime: process.uptime(),
     analysisEnabled,
-    wsPort,
     hasDerivConfig: Boolean(DERIV_TOKEN && DERIV_APP_ID),
   });
 });
@@ -58,62 +67,58 @@ app.get('/readyz', (req, res) => {
 const timeframeSchema = z.enum(['1m', '5m', '15m', '1h', '4h', '1d']);
 const symbolSchema = z.string().min(1);
 
-
-// WebSocket server for real-time updates
-const wss = new WebSocket.Server({ port: wsPort });
-
-// Store active connections
-const clients = new Set();
-
-// WebSocket connection handler
+// WebSocket connection handling
 wss.on('connection', (ws) => {
-  clients.add(ws);
-  console.log('New WebSocket connection');
-
-  ws.on('message', async (message) => {
+  console.log('New WebSocket client connected');
+  
+  ws.on('message', (message) => {
     try {
       const data = JSON.parse(message);
-      await handleWebSocketMessage(ws, data);
+      console.log('Received message:', data);
+      
+      // Handle different message types
+      if (data.type === 'subscribe') {
+        // Handle subscription logic
+        ws.subscriptions = ws.subscriptions || new Set();
+        const subKey = `${data.symbol}|${data.timeframe}`;
+        ws.subscriptions.add(subKey);
+        console.log(`Client subscribed to ${subKey}`);
+      } else if (data.type === 'unsubscribe') {
+        // Handle unsubscription logic
+        if (ws.subscriptions) {
+          const subKey = `${data.symbol}|${data.timeframe}`;
+          ws.subscriptions.delete(subKey);
+          console.log(`Client unsubscribed from ${subKey}`);
+        }
+      }
     } catch (error) {
-      console.error('WebSocket message error:', error);
+      console.error('Error processing WebSocket message:', error);
     }
   });
 
   ws.on('close', () => {
-    clients.delete(ws);
-    console.log('WebSocket connection closed');
-  });
-});
-
-// Broadcast to all connected clients
-function broadcast(data) {
-  clients.forEach(client => {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(JSON.stringify(data));
+    console.log('Client disconnected');
+    // Clean up any resources
+    if (ws.subscriptions) {
+      ws.subscriptions.clear();
     }
   });
-}
 
-// Handle WebSocket messages
-async function handleWebSocketMessage(ws, data) {
-  const { type, symbol, timeframe, action } = data;
+  // Send initial connection message
+  ws.send(JSON.stringify({ type: 'connection', status: 'connected' }));
+});
 
-  switch (type) {
-    case 'subscribe':
-      await subscribeToSymbol(ws, symbol, timeframe);
-      break;
-    case 'unsubscribe':
-      await unsubscribeFromSymbol(ws, symbol, timeframe);
-      break;
-    case 'get_signals':
-      const signals = await getTradingSignals(symbol, timeframe);
-      ws.send(JSON.stringify({ type: 'signals', data: signals }));
-      break;
-    case 'get_market_data':
-      const marketData = await marketDataService.getMarketData(symbol, timeframe);
-      ws.send(JSON.stringify({ type: 'market_data', data: marketData }));
-      break;
+// Broadcast function to send data to all connected clients
+function broadcast(data) {
+  if (typeof data !== 'string') {
+    data = JSON.stringify(data);
   }
+  
+  wss.clients.forEach((client) => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(data);
+    }
+  });
 }
 
 // API Routes
@@ -141,9 +146,19 @@ app.get('/api/market-data/:symbol/:timeframe', async (req, res) => {
 app.get('/api/signals/:symbol/:timeframe', async (req, res) => {
   try {
     const { symbol, timeframe } = req.params;
+    const { strategy = 'daytrading' } = req.query; // Default to daytrading if not specified
+    
+    // Validate inputs
     timeframeSchema.parse(timeframe);
     symbolSchema.parse(symbol);
-    const signals = await getTradingSignals(symbol, timeframe);
+    
+    // Validate strategy
+    const validStrategies = ['scalping', 'daytrading', 'swingtrading'];
+    if (!validStrategies.includes(strategy)) {
+      return res.status(400).json({ error: 'Invalid strategy. Must be one of: ' + validStrategies.join(', ') });
+    }
+    
+    const signals = await getTradingSignals(symbol, timeframe, strategy);
     res.json(signals);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -155,7 +170,8 @@ app.get('/api/choch-analysis/:symbol/:timeframe', async (req, res) => {
     const { symbol, timeframe } = req.params;
     timeframeSchema.parse(timeframe);
     symbolSchema.parse(symbol);
-    const analysis = await chochDetector.analyze(symbol, timeframe);
+    const md = await marketDataService.getMarketData(symbol, timeframe);
+    const analysis = await chochDetector.analyze(symbol, timeframe, md);
     res.json(analysis);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -165,7 +181,9 @@ app.get('/api/choch-analysis/:symbol/:timeframe', async (req, res) => {
 app.get('/api/risk-analysis/:symbol', async (req, res) => {
   try {
     const { symbol } = req.params;
-    const risk = await riskManager.analyzeRisk(symbol);
+    // use 1h candles by default for risk
+    const md = await marketDataService.getMarketData(symbol, '1h');
+    const risk = await riskManager.analyzeRisk(symbol, md);
     res.json(risk);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -196,7 +214,7 @@ app.get('/api/analysis/status', (req, res) => {
 });
 
 // Get trading signals with CHOCH detection
-async function getTradingSignals(symbol, timeframe) {
+async function getTradingSignals(symbol, timeframe, strategy = 'daytrading') {
   try {
     // Get market data
     const marketData = await marketDataService.getMarketData(symbol, timeframe);
@@ -210,7 +228,8 @@ async function getTradingSignals(symbol, timeframe) {
       timeframe,
       marketData,
       chochAnalysis,
-      riskManager
+      riskManager,
+      strategy // Pass the strategy to the signal generator
     });
 
     // Ensure required fields for storage
@@ -274,9 +293,9 @@ async function initializeServices() {
   }
 }
 
-// Start server
-app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
-  console.log(`WebSocket server running on port ${wsPort}`);
+// Start the combined HTTP/WebSocket server
+server.listen(port, '0.0.0.0', () => {
+  console.log(`Server running on http://localhost:${port}`);
+  console.log(`WebSocket server running on ws://localhost:${port}`);
   initializeServices();
 });

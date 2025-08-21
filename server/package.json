@@ -9,23 +9,27 @@
     "test": "jest"
   },
   "dependencies": {
-    "express": "^4.18.2",
-    "cors": "^2.8.5",
-    "ws": "^8.14.2",
-    "axios": "^1.6.0",
     "@deriv/deriv-api": "^1.0.15",
+    "asciichart": "^1.5.25",
+    "axios": "^1.6.0",
+    "cors": "^2.8.5",
+    "date-fns": "^4.1.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.18.2",
+    "express-rate-limit": "^7.4.0",
+    "helmet": "^7.1.0",
+    "ml-regression": "^6.0.1",
     "node-cron": "^3.0.3",
+    "recharts": "^3.1.2",
     "redis": "^4.6.10",
     "sqlite3": "^5.1.6",
-    "ml-regression": "^6.0.1",
     "technicalindicators": "^3.1.0",
-    "dotenv": "^16.4.5",
-    "helmet": "^7.1.0",
-    "express-rate-limit": "^7.4.0",
+    "ws": "^8.14.2",
     "zod": "^3.23.8"
   },
   "devDependencies": {
-    "nodemon": "^3.0.1",
-    "jest": "^29.7.0"
+    "@types/recharts": "^1.8.29",
+    "jest": "^29.7.0",
+    "nodemon": "^3.0.1"
   }
 }

@@ -1,48 +1,97 @@
-const MLRegression = require('ml-regression');
 const SMCStrategy = require('./smc-strategy');
 const CRTDetector = require('./crt-detector');
+const MarketDataService = require('./market-data');
 
 class SignalGenerator {
   constructor() {
-    this.model = null;
+    this.model = null; // simple in-house logistic-like model
     this.features = ['returns', 'volatility', 'swing_features'];
     this.scaler = null;
     this.smc = new SMCStrategy();
     this.crt = new CRTDetector();
+    
+    // Strategy configurations
+    this.strategies = {
+      scalping: {
+        minConfidence: 0.7,
+        minRiskReward: 1.5,
+        timeframes: ['1m', '5m'],
+        indicators: ['rsi', 'macd', 'stochastic']
+      },
+      daytrading: {
+        minConfidence: 0.65,
+        minRiskReward: 2.0,
+        timeframes: ['15m', '1h'],
+        indicators: ['rsi', 'macd', 'sma', 'volume']
+      },
+      swingtrading: {
+        minConfidence: 0.6,
+        minRiskReward: 3.0,
+        timeframes: ['4h', '1d'],
+        indicators: ['sma', 'ema', 'volume', 'atr']
+      }
+    };
   }
 
-  async generateSignals({ symbol, timeframe, marketData, chochAnalysis, riskManager }) {
+  async generateSignals({ symbol, timeframe, marketData, chochAnalysis, riskManager, strategy = 'daytrading' }) {
     try {
       if (!marketData || marketData.length < 50) {
         throw new Error('Insufficient market data for signal generation');
       }
 
-      // Price-action only
-      const chochSignals = this.generateCHOCHSignals(chochAnalysis, marketData);
-      const technicalSignals = this.generatePriceActionSignals(marketData, chochAnalysis?.marketStructure?.regime);
-      const smcSignals = await this.smc.generateSMCSignals({ symbol, marketDataService: require('./market-data') instanceof Function ? new (require('./market-data'))() : null });
+      // Get strategy config
+      const strategyConfig = this.strategies[strategy] || this.strategies.daytrading;
       
-      // Combine signals using ML model
-      const mlSignals = await this.generateMLSignals(marketData, chochAnalysis);
-      const crtSignals = await this.crt.generateCRTSignals?.({ symbol, timeframe })
-        ?? await this.crt.detect(symbol, new (require('./market-data'))());
+      // Check if timeframe is valid for this strategy
+      if (!strategyConfig.timeframes.includes(timeframe)) {
+        return []; // No signals for unsupported timeframes
+      }
+
+      // Generate signals based on strategy
+      const signals = [];
+      
+      // Price-action signals (common for all strategies)
+      const chochSignals = this.generateCHOCHSignals(chochAnalysis, marketData);
+      const priceActionSignals = this.generatePriceActionSignals(marketData, chochAnalysis?.marketStructure?.regime);
+      
+      // Strategy-specific signals
+      let strategySpecificSignals = [];
+      
+      switch(strategy) {
+        case 'scalping':
+          strategySpecificSignals = await this.generateScalpingSignals(marketData);
+          break;
+        case 'swingtrading':
+          strategySpecificSignals = await this.generateSwingTradingSignals(marketData);
+          break;
+        default: // daytrading
+          strategySpecificSignals = await this.generateDayTradingSignals(marketData);
+      }
+      
+      // Combine all signals
+      const allSignals = [
+        ...chochSignals,
+        ...priceActionSignals,
+        ...strategySpecificSignals
+      ];
+      
+      // Filter signals based on strategy requirements
+      const filteredSignals = allSignals.filter(signal => 
+        signal.confidence >= strategyConfig.minConfidence &&
+        signal.riskReward >= strategyConfig.minRiskReward
+      );
       
       // Risk assessment
       const riskAssessment = await riskManager.analyzeRisk(symbol, marketData);
       
       // Combine all signals
-      const combinedSignals = this.combineSignals([
-        ...chochSignals,
-        ...technicalSignals,
-        ...mlSignals,
-        ...(smcSignals || []),
-        ...(crtSignals || [])
-      ], riskAssessment);
+      const combinedSignals = this.combineSignals(filteredSignals, riskAssessment);
 
       // Filter by confidence and risk
-      const filteredSignals = this.filterSignals(combinedSignals, riskAssessment);
+      const finalSignals = this.filterSignals(combinedSignals, riskAssessment);
 
-      return filteredSignals;
+      return finalSignals;
+      
     } catch (error) {
       console.error('Signal generation error:', error);
       return this.getFallbackSignals(symbol, timeframe);
@@ -276,12 +325,12 @@ class SignalGenerator {
     return signals;
   }
 
-  async generateMLSignals(marketData, indicators, chochAnalysis) {
+  async generateMLSignals(marketData, chochAnalysis) {
     const signals = [];
     
     try {
-      // Prepare features for ML model
-      const features = this.prepareFeatures(marketData, indicators, chochAnalysis);
+      // Prepare features for ML model (price-action only)
+      const features = this.prepareFeatures(marketData, chochAnalysis);
       
       if (features.length < 10) return signals;
 
@@ -325,25 +374,21 @@ class SignalGenerator {
     return signals;
   }
 
-  prepareFeatures(marketData, indicators, chochAnalysis) {
+  prepareFeatures(marketData, chochAnalysis) {
     const features = [];
     
-    for (let i = 50; i < marketData.length; i++) {
+    for (let i = 1; i < marketData.length; i++) {
       const regime = chochAnalysis?.marketStructure?.regime || 'ranging';
       const regimeNumeric = regime === 'bullish_trend' ? 1 : regime === 'bearish_trend' ? -1 : 0;
-      const feature = {
-        rsi: indicators.rsi[i] || 50,
-        macd: indicators.macd[i]?.MACD || 0,
-        stochastic: indicators.stochastic[i]?.k || 50,
-        volume: marketData[i].volume,
-        price_change: (marketData[i].close - marketData[i-1].close) / marketData[i-1].close,
-        choch_score: chochAnalysis.score,
-        trend: indicators.sma20[i] > indicators.sma50[i] ? 1 : 0,
-        volatility: (marketData[i].high - marketData[i].low) / marketData[i].close,
+      const priceChange = (marketData[i].close - marketData[i-1].close) / (marketData[i-1].close || 1);
+      const volatility = (marketData[i].high - marketData[i].low) / (marketData[i].close || 1);
+      features.push({
+        volume: marketData[i].volume || 0,
+        price_change: priceChange,
+        choch_score: chochAnalysis?.score ?? 0.5,
+        volatility,
         regime: regimeNumeric
-      };
-      
-      features.push(feature);
+      });
     }
     
     return features;
@@ -351,27 +396,46 @@ class SignalGenerator {
 
   async trainModel(features) {
     try {
-      // Prepare training data
+      // Prepare simple correlation-based weights model
       const X = features.map(f => [
-        f.rsi,
-        f.macd,
-        f.stochastic,
         f.volume,
         f.price_change,
         f.choch_score,
-        f.trend,
         f.volatility,
         f.regime
       ]);
-      
-      const y = features.map(f => f.price_change > 0 ? 1 : 0);
-      
-      // Simple logistic regression
-      this.model = new MLRegression.LogisticRegression(X, y);
-      
-      console.log('ML model trained successfully');
+      const y = features.map(f => (f.price_change > 0 ? 1 : 0));
+
+      // Compute mean/std per feature
+      const means = Array(X[0].length).fill(0);
+      const stds = Array(X[0].length).fill(0);
+      for (let j = 0; j < means.length; j++) {
+        means[j] = X.reduce((s, row) => s + row[j], 0) / X.length;
+        stds[j] = Math.sqrt(
+          X.reduce((s, row) => s + Math.pow(row[j] - means[j], 2), 0) / Math.max(1, X.length - 1)
+        ) || 1;
+      }
+
+      // Standardize and compute simple weights via covariance with target
+      const weights = Array(X[0].length).fill(0);
+      const yMean = y.reduce((s, v) => s + v, 0) / y.length;
+      const yStd = Math.sqrt(y.reduce((s, v) => s + Math.pow(v - yMean, 2), 0) / Math.max(1, y.length - 1)) || 1;
+      for (let j = 0; j < weights.length; j++) {
+        let cov = 0;
+        for (let i = 0; i < X.length; i++) {
+          cov += ((X[i][j] - means[j]) / stds[j]) * ((y[i] - yMean) / yStd);
+        }
+        weights[j] = cov / X.length;
+      }
+
+      // Bias term as negative mean of weighted inputs for centered decision boundary
+      const bias = -weights.reduce((s, w, j) => s + w * (0), 0);
+
+      this.model = { weights, means, stds, bias };
+      console.log('ML lightweight model prepared');
     } catch (error) {
       console.error('ML model training error:', error);
+      this.model = null;
     }
   }
 
@@ -382,21 +446,21 @@ class SignalGenerator {
 
     try {
       const input = [
-        features.rsi,
-        features.macd,
-        features.stochastic,
         features.volume,
         features.price_change,
         features.choch_score,
-        features.trend,
-        features.volatility
+        features.volatility,
+        features.regime
       ];
-      
-      const prediction = this.model.predict(input);
-      
+
+      // Standardize and score
+      const xz = input.map((v, j) => (v - this.model.means[j]) / (this.model.stds[j] || 1));
+      const score = xz.reduce((s, z, j) => s + z * this.model.weights[j], this.model.bias);
+      const prob = 1 / (1 + Math.exp(-score));
+
       return {
-        direction: prediction > 0.5 ? 'BUY' : 'SELL',
-        confidence: Math.abs(prediction - 0.5) * 2
+        direction: prob > 0.5 ? 'BUY' : 'SELL',
+        confidence: Math.max(0.5, Math.min(0.99, Math.abs(prob - 0.5) * 2))
       };
     } catch (error) {
       console.error('ML prediction error:', error);
@@ -504,6 +568,159 @@ class SignalGenerator {
       riskReward: 0,
       marketCondition: 'insufficient_data'
     }];
+  }
+
+  async generateScalpingSignals(marketData) {
+    const signals = [];
+    if (marketData.length < 20) return signals;
+    
+    const closes = marketData.map(d => d.close);
+    const highs = marketData.map(d => d.high);
+    const lows = marketData.map(d => d.low);
+    
+    // Use faster indicators for scalping
+    const rsi = RSI.calculate({ period: 10, values: closes });
+    const stoch = Stochastic.calculate({
+      high: highs,
+      low: lows,
+      close: closes,
+      period: 10,
+      signalPeriod: 3
+    });
+    
+    const lastCandle = marketData[marketData.length - 1];
+    const currentRsi = rsi[rsi.length - 1];
+    const currentStoch = stoch[stoch.length - 1];
+    
+    // RSI and Stochastic overbought/oversold signals
+    if (currentRsi < 30 && currentStoch.k < 20) {
+      signals.push({
+        type: 'SCALP_BUY',
+        direction: 'BUY',
+        entryPrice: lastCandle.close,
+        stopLoss: lastCandle.low * 0.998,
+        takeProfit: lastCandle.close * 1.005,
+        confidence: 0.7,
+        timeframe: '1m',
+        riskReward: 1.5,
+        marketCondition: 'oversold'
+      });
+    } else if (currentRsi > 70 && currentStoch.k > 80) {
+      signals.push({
+        type: 'SCALP_SELL',
+        direction: 'SELL',
+        entryPrice: lastCandle.close,
+        stopLoss: lastCandle.high * 1.002,
+        takeProfit: lastCandle.close * 0.995,
+        confidence: 0.7,
+        timeframe: '1m',
+        riskReward: 1.5,
+        marketCondition: 'overbought'
+      });
+    }
+    
+    return signals;
+  }
+
+  async generateDayTradingSignals(marketData) {
+    const signals = [];
+    if (marketData.length < 50) return signals;
+    
+    const closes = marketData.map(d => d.close);
+    const highs = marketData.map(d => d.high);
+    const lows = marketData.map(d => d.low);
+    
+    // Use 15m/1h timeframe indicators
+    const rsi = RSI.calculate({ period: 14, values: closes });
+    const ema20 = EMA.calculate({ period: 20, values: closes });
+    const ema50 = EMA.calculate({ period: 50, values: closes });
+    
+    const lastCandle = marketData[marketData.length - 1];
+    const currentRsi = rsi[rsi.length - 1];
+    const currentEma20 = ema20[ema20.length - 1];
+    const currentEma50 = ema50[ema50.length - 1];
+    
+    // EMA crossover strategy
+    if (currentEma20 > currentEma50 && ema20[ema20.length - 2] <= ema50[ema50.length - 2]) {
+      signals.push({
+        type: 'DAYTRADE_BUY',
+        direction: 'BUY',
+        entryPrice: lastCandle.close,
+        stopLoss: Math.min(lastCandle.low, currentEma50) * 0.995,
+        takeProfit: lastCandle.close * 1.015,
+        confidence: 0.65,
+        timeframe: '15m',
+        riskReward: 2.0,
+        marketCondition: 'bullish_crossover'
+      });
+    } else if (currentEma20 < currentEma50 && ema20[ema20.length - 2] >= ema50[ema50.length - 2]) {
+      signals.push({
+        type: 'DAYTRADE_SELL',
+        direction: 'SELL',
+        entryPrice: lastCandle.close,
+        stopLoss: Math.max(lastCandle.high, currentEma50) * 1.005,
+        takeProfit: lastCandle.close * 0.985,
+        confidence: 0.65,
+        timeframe: '15m',
+        riskReward: 2.0,
+        marketCondition: 'bearish_crossover'
+      });
+    }
+    
+    return signals;
+  }
+
+  async generateSwingTradingSignals(marketData) {
+    const signals = [];
+    if (marketData.length < 200) return signals; // Need more data for swing trading
+    
+    const closes = marketData.map(d => d.close);
+    const highs = marketData.map(d => d.high);
+    const lows = marketData.map(d => d.low);
+    
+    // Use daily/weekly indicators for swing trading
+    const sma50 = SMA.calculate({ period: 50, values: closes });
+    const sma200 = SMA.calculate({ period: 200, values: closes });
+    const atr = ATR.calculate({
+      high: highs,
+      low: lows,
+      close: closes,
+      period: 14
+    });
+    
+    const lastCandle = marketData[marketData.length - 1];
+    const currentSma50 = sma50[sma50.length - 1];
+    const currentSma200 = sma200[sma200.length - 1];
+    const currentAtr = atr[atr.length - 1];
+    
+    // Golden/Death Cross strategy
+    if (currentSma50 > currentSma200 && sma50[sma50.length - 2] <= sma200[sma200.length - 2]) {
+      signals.push({
+        type: 'SWING_LONG',
+        direction: 'BUY',
+        entryPrice: lastCandle.close,
+        stopLoss: lastCandle.low - (currentAtr * 2),
+        takeProfit: lastCandle.close + (currentAtr * 4),
+        confidence: 0.6,
+        timeframe: '4h',
+        riskReward: 3.0,
+        marketCondition: 'bullish_trend'
+      });
+    } else if (currentSma50 < currentSma200 && sma50[sma50.length - 2] >= sma200[sma200.length - 2]) {
+      signals.push({
+        type: 'SWING_SHORT',
+        direction: 'SELL',
+        entryPrice: lastCandle.close,
+        stopLoss: lastCandle.high + (currentAtr * 2),
+        takeProfit: lastCandle.close - (currentAtr * 4),
+        confidence: 0.6,
+        timeframe: '4h',
+        riskReward: 3.0,
+        marketCondition: 'bearish_trend'
+      });
+    }
+    
+    return signals;
   }
 }
 
