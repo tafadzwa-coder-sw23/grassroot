@@ -13,6 +13,7 @@ const SignalGenerator = require('./services/signal-generator');
 const MarketDataService = require('./services/market-data');
 const RiskManager = require('./services/risk-manager');
 const WebSocketService = require('./services/websocket-service');
+const PureCRTDetector = require('./services/pure-crt-detector');
 const { z } = require('zod');
 
 const app = express();
@@ -28,6 +29,10 @@ const signalGenerator = new SignalGenerator();
 const marketDataService = new MarketDataService();
 const riskManager = new RiskManager();
 const wsService = new WebSocketService();
+const pureCrtDetector = new PureCRTDetector({
+  driverTimeframe: '5m',
+  entryTimeframe: '1m'
+});
 
 // Deriv API Configuration
 const DERIV_TOKEN = process.env.DERIV_TOKEN || '';
@@ -190,6 +195,136 @@ app.get('/api/risk-analysis/:symbol', async (req, res) => {
   }
 });
 
+// Pure CRT endpoint
+app.get('/api/pure-crt', async (req, res) => {
+  try {
+    const { symbol } = req.query;
+    if (!symbol) {
+      return res.status(400).json({ error: 'Symbol is required' });
+    }
+    
+    const signals = await pureCrtDetector.detect(symbol, marketDataService);
+    res.json({
+      success: true,
+      symbol,
+      signals
+    });
+  } catch (error) {
+    console.error('Error in Pure CRT endpoint:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Test endpoint for Pure CRT signals
+app.get('/api/test-pure-crt', async (req, res) => {
+  try {
+    const { symbol = 'BTCUSDT', timeframe = '5m' } = req.query;
+    
+    console.log(`Generating Pure CRT signals for ${symbol} on ${timeframe}`);
+    
+    // Create a new instance with debug logging
+    const pureCrt = new (require('./services/pure-crt-detector'))({
+      debug: true,
+      driverTimeframe: timeframe,
+      entryTimeframe: '1m'
+    });
+    
+    // Get market data
+    const marketData = await marketDataService.getMarketData(symbol, timeframe, 100);
+    console.log(`Fetched ${marketData.length} candles for ${symbol} on ${timeframe}`);
+    
+    if (marketData.length === 0) {
+      return res.status(400).json({ error: 'No market data available' });
+    }
+    
+    // Generate signals
+    const signals = await pureCrt.detect(symbol, marketDataService);
+    
+    res.json({
+      success: true,
+      symbol,
+      timeframe,
+      signals,
+      marketDataPoints: marketData.length,
+      firstCandle: marketData[0],
+      lastCandle: marketData[marketData.length - 1]
+    });
+    
+  } catch (error) {
+    console.error('Error in Pure CRT test endpoint:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+});
+
+// Debug endpoint to check market data service
+app.get('/api/debug/market-data', async (req, res) => {
+  try {
+    const { 
+      symbol = 'BTCUSDT', 
+      timeframe = '5m',
+      limit = 100 
+    } = req.query;
+    
+    console.log(`Fetching ${limit} candles for ${symbol} on ${timeframe}`);
+    
+    const marketData = await marketDataService.getMarketData(symbol, timeframe, parseInt(limit));
+    
+    if (!marketData || marketData.length === 0) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'No market data returned',
+        details: 'The market data service returned an empty array.'
+      });
+    }
+    
+    // Check data structure
+    const sampleCandle = marketData[0];
+    const requiredFields = ['open', 'high', 'low', 'close', 'volume', 'timestamp'];
+    const missingFields = requiredFields.filter(field => !(field in sampleCandle));
+    
+    if (missingFields.length > 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid candle data structure',
+        missingFields,
+        sampleCandle
+      });
+    }
+    
+    res.json({
+      success: true,
+      symbol,
+      timeframe,
+      candleCount: marketData.length,
+      firstCandle: {
+        ...marketData[0],
+        timestamp: new Date(marketData[0].timestamp).toISOString()
+      },
+      lastCandle: {
+        ...marketData[marketData.length - 1],
+        timestamp: new Date(marketData[marketData.length - 1].timestamp).toISOString()
+      },
+      timeRange: {
+        start: new Date(marketData[marketData.length - 1].timestamp).toISOString(),
+        end: new Date(marketData[0].timestamp).toISOString(),
+        durationMinutes: (new Date(marketData[0].timestamp) - new Date(marketData[marketData.length - 1].timestamp)) / (1000 * 60)
+      }
+    });
+    
+  } catch (error) {
+    console.error('Error in market data debug endpoint:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+});
+
 // Analysis control endpoints
 app.post('/api/analysis/start', async (req, res) => {
   try {
@@ -279,8 +414,43 @@ const scheduledTask = cron.schedule('*/5 * * * *', async () => {
   }
 }, { scheduled: true });
 
-// Start with task running but disabled by flag
+// Pure CRT scheduled scanner (runs every 2 minutes)
+const pureCrtScheduledTask = cron.schedule('*/2 * * * *', async () => {
+  if (!analysisEnabled) return;
+  
+  try {
+    const symbols = await marketDataService.getActiveSymbols();
+    const allSignals = [];
+    
+    for (const symbol of symbols) {
+      try {
+        const signals = await pureCrtDetector.detect(symbol, marketDataService);
+        if (signals.length > 0) {
+          allSignals.push({ symbol, signals });
+          // Store signals in database if needed
+          await db.storeSignals(signals);
+        }
+      } catch (error) {
+        console.error(`Error processing ${symbol}:`, error);
+      }
+    }
+    
+    // Broadcast via WebSocket
+    if (allSignals.length > 0) {
+      broadcast({
+        type: 'pure_crt_signals',
+        data: allSignals,
+        timestamp: new Date()
+      });
+    }
+  } catch (error) {
+    console.error('Error in Pure CRT scanner:', error);
+  }
+}, { scheduled: true });
+
+// Start with tasks running but disabled by flag
 scheduledTask.start();
+pureCrtScheduledTask.start();
 
 // Initialize services on startup
 async function initializeServices() {

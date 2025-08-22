@@ -1,28 +1,30 @@
 const WebSocket = require('ws');
-const EventEmitter = require('events');
+const config = require('../../config');
 
-class WebSocketService extends EventEmitter {
+class WebSocketService {
   constructor() {
-    super();
     this.ws = null;
-    this.subscriptions = new Map();
+    this.connected = false;
+    this.subscriptions = new Set();
+    this.messageQueue = [];
     this.reconnectAttempts = 0;
     this.maxReconnectAttempts = 5;
-    this.reconnectInterval = 5000;
-    this.isConnected = false;
-    this.appId = '80727';
-    this.wsURL = 'wss://ws.derivws.com/websockets/v3';
+    this.reconnectInterval = 5000; // 5 seconds
+    this.eventListeners = {};
   }
 
-  connect() {
+  async connect() {
+    if (this.connected) return Promise.resolve();
+
     return new Promise((resolve, reject) => {
       try {
-        this.ws = new WebSocket(`${this.wsURL}?app_id=${this.appId}`);
-        
+        this.ws = new WebSocket(config.api.websocketUrl);
+
         this.ws.on('open', () => {
-          console.log('WebSocket connected to Deriv API');
-          this.isConnected = true;
+          console.log('WebSocket connected');
+          this.connected = true;
           this.reconnectAttempts = 0;
+          this.processMessageQueue();
           this.emit('connected');
           resolve();
         });
@@ -30,17 +32,26 @@ class WebSocketService extends EventEmitter {
         this.ws.on('message', (data) => {
           try {
             const message = JSON.parse(data);
-            this.handleMessage(message);
+            this.emit('message', message);
+            
+            // Handle different message types
+            if (message.msg_type === 'tick') {
+              this.emit('tick', message);
+            } else if (message.msg_type === 'ohlc') {
+              this.emit('candle', message);
+            } else if (message.msg_type === 'active_symbols') {
+              this.emit('activeSymbols', message);
+            }
           } catch (error) {
-            console.error('Error parsing WebSocket message:', error);
+            console.error('Error processing WebSocket message:', error);
           }
         });
 
-        this.ws.on('close', (code, reason) => {
-          console.log(`WebSocket disconnected: ${code} - ${reason}`);
-          this.isConnected = false;
-          this.emit('disconnected');
+        this.ws.on('close', () => {
+          console.log('WebSocket disconnected');
+          this.connected = false;
           this.attemptReconnect();
+          this.emit('disconnected');
         });
 
         this.ws.on('error', (error) => {
@@ -48,157 +59,110 @@ class WebSocketService extends EventEmitter {
           this.emit('error', error);
           reject(error);
         });
-
       } catch (error) {
-        console.error('Failed to create WebSocket connection:', error);
+        console.error('WebSocket connection error:', error);
         reject(error);
       }
     });
   }
 
-  handleMessage(message) {
-    if (message.error) {
-      console.error('Deriv API error:', message.error);
-      this.emit('error', message.error);
-      return;
+  on(event, callback) {
+    if (!this.eventListeners[event]) {
+      this.eventListeners[event] = [];
     }
+    this.eventListeners[event].push(callback);
+  }
 
-    // Handle tick updates
-    if (message.tick) {
-      const symbol = message.tick.symbol;
-      const tickData = {
-        symbol: symbol,
-        ask: message.tick.ask,
-        bid: message.tick.bid,
-        quote: message.tick.quote,
-        epoch: message.tick.epoch,
-        pip_size: message.tick.pip_size || 0.0001
-      };
-
-      this.emit('tick', tickData);
-      
-      // Emit symbol-specific events
-      this.emit(`tick:${symbol}`, tickData);
-    }
-
-    // Handle candle updates
-    if (message.ohlc) {
-      const candle = message.ohlc;
-      const candleData = {
-        symbol: candle.symbol,
-        open: candle.open,
-        high: candle.high,
-        low: candle.low,
-        close: candle.close,
-        volume: candle.volume || 0,
-        epoch: candle.epoch,
-        granularity: candle.granularity
-      };
-
-      this.emit('candle', candleData);
-      this.emit(`candle:${candle.symbol}`, candleData);
-    }
-
-    // Handle subscription confirmations
-    if (message.subscription && message.subscription.id) {
-      const subscriptionId = message.subscription.id;
-      this.subscriptions.set(subscriptionId, {
-        id: subscriptionId,
-        symbol: message.echo_req.ticks || message.echo_req.ohlc?.symbol,
-        type: message.echo_req.ticks ? 'tick' : 'candle',
-        granularity: message.echo_req.ohlc?.granularity
-      });
-      
-      this.emit('subscribed', {
-        id: subscriptionId,
-        symbol: message.echo_req.ticks || message.echo_req.ohlc?.symbol
-      });
+  emit(event, ...args) {
+    const listeners = this.eventListeners[event];
+    if (listeners) {
+      listeners.forEach(callback => callback(...args));
     }
   }
 
-  subscribeToTicks(symbol) {
-    if (!this.isConnected) {
-      throw new Error('WebSocket not connected');
+  async subscribeToMarketData(symbol, timeframe) {
+    const subscriptionId = `${symbol}_${timeframe}`;
+    
+    if (this.subscriptions.has(subscriptionId)) {
+      return; // Already subscribed
     }
 
     const request = {
       ticks: symbol,
-      subscribe: 1
-    };
-
-    this.ws.send(JSON.stringify(request));
-  }
-
-  subscribeToCandles(symbol, granularity = 60) {
-    if (!this.isConnected) {
-      throw new Error('WebSocket not connected');
-    }
-
-    const request = {
-      ticks_history: symbol,
-      style: 'candles',
-      granularity: granularity,
       subscribe: 1,
-      end: 'latest',
-      count: 1
+      style: 'candles',
+      granularity: this.getGranularity(timeframe),
+      end: 'latest'
     };
 
-    this.ws.send(JSON.stringify(request));
+    this.subscriptions.add(subscriptionId);
+    this.sendRequest(request);
   }
 
-  unsubscribe(subscriptionId) {
-    if (!this.isConnected || !this.subscriptions.has(subscriptionId)) {
-      return;
+  async unsubscribeFromMarketData(symbol, timeframe) {
+    const subscriptionId = `${symbol}_${timeframe}`;
+    
+    if (!this.subscriptions.has(subscriptionId)) {
+      return; // Not subscribed
     }
 
     const request = {
       forget: subscriptionId
     };
 
-    this.ws.send(JSON.stringify(request));
     this.subscriptions.delete(subscriptionId);
+    this.sendRequest(request);
   }
 
-  unsubscribeAll() {
-    this.subscriptions.forEach((subscription, id) => {
-      this.unsubscribe(id);
-    });
+  getGranularity(timeframe) {
+    const granularityMap = {
+      '1m': 60,
+      '5m': 300,
+      '15m': 900,
+      '1h': 3600,
+      '1d': 86400
+    };
+    return granularityMap[timeframe] || 60; // Default to 1m
+  }
+
+  sendRequest(request) {
+    if (this.connected && this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(request));
+    } else {
+      this.messageQueue.push(request);
+      if (!this.connected) {
+        this.attemptReconnect();
+      }
+    }
+  }
+
+  processMessageQueue() {
+    while (this.messageQueue.length > 0 && this.connected) {
+      const message = this.messageQueue.shift();
+      this.ws.send(JSON.stringify(message));
+    }
   }
 
   attemptReconnect() {
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
       console.error('Max reconnection attempts reached');
-      this.emit('maxReconnectAttempts');
       return;
     }
 
     this.reconnectAttempts++;
-    console.log(`Attempting to reconnect... (${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+    console.log(`Attempting to reconnect (${this.reconnectAttempts}/${this.maxReconnectAttempts})...`);
     
     setTimeout(() => {
-      this.connect().catch(error => {
-        console.error('Reconnection failed:', error);
-      });
+      this.connect().catch(console.error);
     }, this.reconnectInterval);
   }
 
-  disconnect() {
+  async disconnect() {
     if (this.ws) {
-      this.unsubscribeAll();
       this.ws.close();
+      this.connected = false;
       this.ws = null;
-      this.isConnected = false;
     }
-  }
-
-  getActiveSubscriptions() {
-    return Array.from(this.subscriptions.values());
-  }
-
-  isSymbolSubscribed(symbol) {
-    return Array.from(this.subscriptions.values()).some(
-      sub => sub.symbol === symbol
-    );
   }
 }
 
