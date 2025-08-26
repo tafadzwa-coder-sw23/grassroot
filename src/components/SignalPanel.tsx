@@ -55,16 +55,16 @@ export const SignalPanel = ({ symbol, strategy }: SignalPanelProps) => {
     return "text-red-600";
   };
 
-  const formatPrice = (price: number) => {
-    return price.toFixed(5);
+  const formatPrice = (price: number | null | undefined) => {
+    return price !== null && price !== undefined ? price.toFixed(5) : 'N/A';
   };
 
-  const formatPercentage = (value: number) => {
-    return `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`;
+  const formatPercentage = (value: number | null | undefined) => {
+    return value !== null && value !== undefined ? `${value >= 0 ? '+' : ''}${value.toFixed(2)}%` : 'N/A';
   };
 
   if (isLoading) {
-  return (
+    return (
       <Card className="h-[500px]">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -105,7 +105,7 @@ export const SignalPanel = ({ symbol, strategy }: SignalPanelProps) => {
   return (
     <Card className="h-[500px]">
       <CardHeader>
-          <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between">
           <CardTitle className="flex items-center gap-2">
             <Zap className="w-5 h-5" />
             ML Trading Signals
@@ -115,7 +115,7 @@ export const SignalPanel = ({ symbol, strategy }: SignalPanelProps) => {
             className="text-xs"
           >
             {connectionStatus === 'connected' ? 'Live' : 'Offline'}
-              </Badge>
+          </Badge>
         </div>
         
         {/* Current Price Display */}
@@ -145,7 +145,7 @@ export const SignalPanel = ({ symbol, strategy }: SignalPanelProps) => {
               <div>
                 <span className="text-muted-foreground">Score: </span>
                 <Badge variant="outline" className="text-xs">
-                  {chochAnalysis.score.toFixed(2)}
+                  {chochAnalysis.score !== undefined && chochAnalysis.score !== null ? chochAnalysis.score.toFixed(2) : 'N/A'}
                 </Badge>
               </div>
             </div>
@@ -163,7 +163,7 @@ export const SignalPanel = ({ symbol, strategy }: SignalPanelProps) => {
                   variant={riskAnalysis.riskScore < 0.3 ? 'default' : riskAnalysis.riskScore < 0.6 ? 'secondary' : 'destructive'}
                   className="text-xs"
                 >
-                  {riskAnalysis.riskScore.toFixed(2)}
+                  {riskAnalysis.riskScore !== undefined && riskAnalysis.riskScore !== null ? riskAnalysis.riskScore.toFixed(2) : 'N/A'}
                 </Badge>
               </div>
               <div>
@@ -204,7 +204,7 @@ export const SignalPanel = ({ symbol, strategy }: SignalPanelProps) => {
               <div className="flex justify-between">
                 <span>Confidence:</span>
                 <span className={`font-medium ${getConfidenceColor(bestSignal.confidence)}`}>
-                  {(bestSignal.confidence * 100).toFixed(0)}%
+                  {bestSignal.confidence !== undefined && bestSignal.confidence !== null ? (bestSignal.confidence * 100).toFixed(0) + '%' : 'N/A'}
                 </span>
               </div>
             </div>
@@ -220,7 +220,7 @@ export const SignalPanel = ({ symbol, strategy }: SignalPanelProps) => {
               <Target className="w-8 h-8 mx-auto mb-2 opacity-50" />
               <p className="text-sm">No active signals</p>
               <p className="text-xs">Waiting for market conditions...</p>
-          </div>
+            </div>
           ) : (
             signals.map((signal, index) => (
               <div key={signal.id ?? `${signal.symbol}-${signal.timeframe}-${(signal as any).timestamp ?? index}`}
@@ -250,12 +250,12 @@ export const SignalPanel = ({ symbol, strategy }: SignalPanelProps) => {
                   </div>
                   <div className="flex justify-between">
                     <span>R:R:</span>
-                    <span className="text-blue-600">{signal.riskReward.toFixed(1)}</span>
+                    <span className="text-blue-600">{signal.riskReward !== undefined && signal.riskReward !== null ? signal.riskReward.toFixed(1) : 'N/A'}</span>
                   </div>
                   <div className="flex justify-between">
                     <span>Confidence:</span>
                     <span className={`font-medium ${getConfidenceColor(signal.confidence)}`}>
-                      {(signal.confidence * 100).toFixed(0)}%
+                      {signal.confidence !== undefined && signal.confidence !== null ? (signal.confidence * 100).toFixed(0) + '%' : 'N/A'}
                     </span>
                   </div>
                 </div>
@@ -268,8 +268,8 @@ export const SignalPanel = ({ symbol, strategy }: SignalPanelProps) => {
               </div>
             ))
           )}
-          </div>
-        </CardContent>
-      </Card>
+        </div>
+      </CardContent>
+    </Card>
   );
 };

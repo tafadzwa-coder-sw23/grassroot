@@ -1,5 +1,5 @@
 const axios = require('axios');
-const config = require('../../config');
+const config = require('../config');
 const { v4: uuidv4 } = require('uuid');
 
 class MarketDataService {
@@ -16,7 +16,32 @@ class MarketDataService {
       // Indices
       'US30', 'US100', 'US500', 'UK100', 'GER40', 'JPN225',
       // Commodities
-      'XAU/USD', 'XAG/USD', 'OIL/USD', 'NATGAS', 'COPPER'
+      'XAU/USD', 'XAG/USD', 'OIL/USD', 'NATGAS', 'COPPER',
+      // Volatility Indices (Standard and 1s Fast Versions)
+      'V10', 'V25', 'V50', 'V75', 'V100', 'V150', 'V250',
+      'V10 (1s)', 'V25 (1s)', 'V50 (1s)', 'V75 (1s)', 'V90 (1s)', 
+      'V100 (1s)', 'V150 (1s)', 'V200 (1s)', 'V250 (1s)', 'V300 (1s)',
+      // Crash and Boom Indices
+      'CRASH 1000', 'BOOM 1000', 'CRASH 500', 'BOOM 500', 
+      'CRASH 300', 'BOOM 300', 'CRASH 200', 'BOOM 200', 
+      'CRASH 100', 'BOOM 100',
+      // Jump Indices
+      'JUMP INDEX Volatility 10%', 'JUMP INDEX Volatility 25%', 
+      'JUMP INDEX Volatility 50%', 'JUMP INDEX Volatility 75%', 
+      'JUMP INDEX Volatility 100%',
+      // Step Indices
+      'STEP INDEX Volatility 10%', 'STEP INDEX Volatility 25%', 
+      'STEP INDEX Volatility 50%', 'STEP INDEX Volatility 75%', 
+      'STEP INDEX Volatility 100%',
+      // Range Break Indices
+      'RANGE BREAK INDEX Volatility 10%', 'RANGE BREAK INDEX Volatility 25%', 
+      'RANGE BREAK INDEX Volatility 50%', 'RANGE BREAK INDEX Volatility 75%', 
+      'RANGE BREAK INDEX Volatility 100%',
+      // Daily Reset Indices (Synthetic Indices resetting daily)
+      'DAILY RESET INDEX Volatility 10', 'DAILY RESET INDEX Volatility 25', 
+      'DAILY RESET INDEX Volatility 50', 'DAILY RESET INDEX Volatility 100',
+      // Other Special Synthetic Indices
+      'HYBRID INDICES', 'SKEW STEP INDICES', 'TREK INDICES', 'VOLATILITY SWITCH INDICES'
     ]);
   }
 
@@ -190,6 +215,37 @@ class MarketDataService {
     
     return price;
   }
+
+  // Get all supported symbols
+  getAllSymbols() {
+    return Array.from(this.supportedSymbols).map(symbol => ({
+      symbol,
+      display_name: symbol // Assuming display_name is the same as symbol for now
+    }));
+  }
+
+  // Get active symbols (for scanning)
+  getActiveSymbols() {
+    // For now, return all supported symbols
+    // In a real implementation, this could filter based on market conditions
+    return this.getAllSymbols();
+  }
+
+  // Initialize method for API integration
+  async initialize(apiToken, appId) {
+    console.log('MarketDataService initialized with API token and app ID');
+    // Store API credentials for real market data fetching
+    this.apiToken = apiToken;
+    this.appId = appId;
+    
+    // In a real implementation, this would:
+    // 1. Validate API credentials
+    // 2. Establish connection to market data provider
+    // 3. Load initial market data
+    // 4. Set up real-time data streams
+    
+    return Promise.resolve();
+  }
 }
 
-module.exports = new MarketDataService();
+module.exports = MarketDataService;

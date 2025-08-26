@@ -1,7 +1,7 @@
 import axios from 'axios';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001/api';
-const WS_URL = 'ws://localhost:3001';
+const WS_URL = import.meta.env.VITE_WS_URL || 'wss://ws.binaryws.com/websockets/v3';
 
 class TradingAPI {
   private ws: WebSocket | null = null;
@@ -13,7 +13,7 @@ class TradingAPI {
   private connectionPromise: Promise<void> | null = null;
   private messageHandlers: Array<(data: any) => void> = [];
   private connectionChangeListeners: Array<(isConnected: boolean) => void> = [];
-  private readonly WS_URL = `ws://${window.location.hostname}:3001`;  // Use the same port as HTTP server
+  private readonly WS_URL = WS_URL;  // Use the configured WebSocket URL
 
   // Add this method to expose WebSocket ready state
   public getWebSocketReadyState(): number | null {
@@ -192,7 +192,7 @@ class TradingAPI {
       this.ws?.send(JSON.stringify({
         type: 'unsubscribe',
         symbol,
-        timeframe
+        timeframe343
       }));
     } catch (error) {
       console.error('Error unsubscribing from symbol:', error);

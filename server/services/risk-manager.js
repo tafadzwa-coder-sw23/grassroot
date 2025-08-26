@@ -1,4 +1,4 @@
-const config = require('../../config');
+const config = require('../config');
 
 class RiskManager {
   constructor() {
@@ -104,6 +104,99 @@ class RiskManager {
       maxDailyTrades: this.maxDailyTrades
     };
   }
+
+  // Analyze risk for a symbol based on market data
+  async analyzeRisk(symbol, marketData) {
+    try {
+      if (!marketData || marketData.length < 20) {
+        return {
+          symbol,
+          riskLevel: 'UNKNOWN',
+          volatility: 0,
+          trend: 'NEUTRAL',
+          confidence: 0,
+          recommendation: 'INSUFFICIENT_DATA',
+          message: 'Not enough market data for risk analysis'
+        };
+      }
+
+      // Calculate volatility (standard deviation of returns)
+      const returns = [];
+      for (let i = 1; i < marketData.length; i++) {
+        const returnPct = (marketData[i].close - marketData[i-1].close) / marketData[i-1].close;
+        returns.push(returnPct);
+      }
+      
+      const avgReturn = returns.reduce((sum, r) => sum + r, 0) / returns.length;
+      const variance = returns.reduce((sum, r) => sum + Math.pow(r - avgReturn, 2), 0) / returns.length;
+      const volatility = Math.sqrt(variance) * Math.sqrt(252); // Annualized volatility
+
+      // Determine trend
+      const last20Prices = marketData.slice(-20).map(c => c.close);
+      const first10Avg = last20Prices.slice(0, 10).reduce((sum, p) => sum + p, 0) / 10;
+      const last10Avg = last20Prices.slice(10).reduce((sum, p) => sum + p, 0) / 10;
+      const trend = last10Avg > first10Avg ? 'BULLISH' : last10Avg < first10Avg ? 'BEARISH' : 'NEUTRAL';
+
+      // Calculate risk level based on volatility
+      let riskLevel, confidence;
+      if (volatility < 0.1) {
+        riskLevel = 'LOW';
+        confidence = 0.8;
+      } else if (volatility < 0.2) {
+        riskLevel = 'MODERATE';
+        confidence = 0.6;
+      } else if (volatility < 0.3) {
+        riskLevel = 'HIGH';
+        confidence = 0.4;
+      } else {
+        riskLevel = 'VERY_HIGH';
+        confidence = 0.2;
+      }
+
+      // Generate recommendation
+      let recommendation;
+      if (riskLevel === 'LOW' && trend === 'BULLISH') {
+        recommendation = 'STRONG_BUY';
+      } else if (riskLevel === 'LOW' && trend === 'BEARISH') {
+        recommendation = 'CAUTIOUS_BUY';
+      } else if (riskLevel === 'MODERATE' && trend === 'BULLISH') {
+        recommendation = 'BUY';
+      } else if (riskLevel === 'MODERATE' && trend === 'BEARISH') {
+        recommendation = 'HOLD';
+      } else if (riskLevel === 'HIGH' && trend === 'BULLISH') {
+        recommendation = 'CAUTIOUS_BUY';
+      } else if (riskLevel === 'HIGH' && trend === 'BEARISH') {
+        recommendation = 'SELL';
+      } else if (riskLevel === 'VERY_HIGH') {
+        recommendation = 'AVOID';
+      } else {
+        recommendation = 'HOLD';
+      }
+
+      return {
+        symbol,
+        riskLevel,
+        volatility: parseFloat(volatility.toFixed(4)),
+        trend,
+        confidence: parseFloat(confidence.toFixed(2)),
+        recommendation,
+        dataPoints: marketData.length,
+        analysisTime: new Date().toISOString(),
+        message: `Risk analysis completed for ${symbol}`
+      };
+    } catch (error) {
+      console.error('Error in risk analysis:', error);
+      return {
+        symbol,
+        riskLevel: 'ERROR',
+        volatility: 0,
+        trend: 'NEUTRAL',
+        confidence: 0,
+        recommendation: 'ERROR',
+        message: error.message
+      };
+    }
+  }
 }
 
-module.exports = new RiskManager();
+module.exports = RiskManager;

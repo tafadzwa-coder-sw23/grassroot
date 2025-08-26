@@ -20,7 +20,7 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });  // Use the same server for WebSocket
 
-const port = Number(process.env.PORT) || 3001;
+const port = Number(process.env.PORT) || 8082;
 
 // Initialize services
 const db = new Database();
@@ -44,7 +44,9 @@ let analysisEnabled = false;
 // Middleware
 app.use(helmet());
 app.use(cors({
-  origin: ['http://localhost:8080', 'http://localhost:3000'],
+  origin: process.env.NODE_ENV === 'production' 
+    ? ['https://your-vercel-app.vercel.app', 'http://localhost:8080', 'http://localhost:3000']
+    : ['http://localhost:8080', 'http://localhost:3000'],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true

@@ -25,7 +25,7 @@ export const TradingChart = ({ symbol, strategy }: TradingChartProps) => {
     if (!marketData || marketData.length === 0) return [];
     
     return marketData.slice(-50).map((candle, i) => ({
-        x: i * 8,
+      x: i * 8,
       open: candle.open,
       high: candle.high,
       low: candle.low,
@@ -37,7 +37,6 @@ export const TradingChart = ({ symbol, strategy }: TradingChartProps) => {
   };
 
   const candlesticks = generateCandlesticks();
-  const isUptrend = priceChange >= 0;
 
   if (isLoading) {
     return (
@@ -96,14 +95,16 @@ export const TradingChart = ({ symbol, strategy }: TradingChartProps) => {
             >
               {connectionStatus === 'connected' ? 'Live' : 'Offline'}
             </Badge>
-            {currentPrice && (
-            <div className="text-right">
-                <div className="text-lg font-bold">{currentPrice.toFixed(5)}</div>
-              <div className={`text-sm flex items-center gap-1 ${isUptrend ? 'text-green-600' : 'text-red-600'}`}>
-                {isUptrend ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
-                  {isUptrend ? '+' : ''}{priceChange.toFixed(2)}%
+            {currentPrice !== null && currentPrice !== undefined && priceChange !== null && priceChange !== undefined && (
+              <>
+                <div className="text-right">
+                  <div className="text-lg font-bold">{currentPrice.toFixed(5)}</div>
+                  <div className={`text-sm flex items-center gap-1 ${priceChange >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                    {priceChange >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
+                    {priceChange >= 0 ? '+' : ''}{priceChange.toFixed(2)}%
+                  </div>
                 </div>
-              </div>
+              </>
             )}
           </div>
         </div>
@@ -138,60 +139,63 @@ export const TradingChart = ({ symbol, strategy }: TradingChartProps) => {
                   {/* Wick */}
                   <line
                     x1={candle.x + 3}
-                    y1={200 - (candle.high - currentPrice!) * 1000}
+                    y1={200 - (candle.high - (currentPrice || 0)) * 1000}
                     x2={candle.x + 3}
-                    y2={200 - (candle.low - currentPrice!) * 1000}
+                    y2={200 - (candle.low - (currentPrice || 0)) * 1000}
                     stroke={candle.isGreen ? "#22c55e" : "#ef4444"}
                     strokeWidth="1"
                   />
                   {/* Body */}
-              <rect
+                  <rect
                     x={candle.x + 1}
-                    y={bodyY}
                     width="4"
                     height={Math.max(bodyHeight, 2)}
                     fill={candle.isGreen ? "#22c55e" : "#ef4444"}
-                opacity="0.8"
-              />
+                    opacity="0.8"
+                  />
                 </g>
               );
             })}
             
             {/* Trend line */}
             {candlesticks.length > 1 && (
-            <polyline
-                points={candlesticks.map((candle, i) => `${candle.x + 3},${200 - (candle.close - currentPrice!) * 1000}`).join(' ')}
-              fill="none"
-              stroke="hsl(var(--primary))"
-              strokeWidth="2"
-              opacity="0.6"
-            />
+              <polyline
+                points={candlesticks.map((candle, i) => `${candle.x + 3},${200 - (candle.close - (currentPrice || 0)) * 1000}`).join(' ')}
+                fill="none"
+                stroke="hsl(var(--primary))"
+                strokeWidth="2"
+                opacity="0.6"
+              />
             )}
           </svg>
           
           {/* CHOCH Analysis Overlay */}
-          {chochAnalysis && (
+          {chochAnalysis && chochAnalysis.score !== undefined && chochAnalysis.score !== null && (
             <div className="absolute top-4 left-4 space-y-2">
               <Badge className="bg-blue-500 text-white">
                 CHOCH Score: {chochAnalysis.score.toFixed(2)}
               </Badge>
-              <Badge className="bg-purple-500 text-white">
-                {chochAnalysis.marketStructure.trend}
-              </Badge>
+              {chochAnalysis.marketStructure && chochAnalysis.marketStructure.trend && (
+                <Badge className="bg-purple-500 text-white">
+                  {chochAnalysis.marketStructure.trend}
+                </Badge>
+              )}
             </div>
           )}
           
           {/* Risk Analysis Overlay */}
-          {riskAnalysis && (
+          {riskAnalysis && riskAnalysis.riskScore !== undefined && riskAnalysis.riskScore !== null && (
             <div className="absolute top-4 right-4 space-y-2">
               <Badge 
                 variant={riskAnalysis.riskScore < 0.3 ? 'default' : riskAnalysis.riskScore < 0.6 ? 'secondary' : 'destructive'}
               >
                 Risk: {riskAnalysis.riskScore.toFixed(2)}
               </Badge>
-              <Badge variant="outline">
-                Vol: {riskAnalysis.volatility.classification}
-              </Badge>
+              {riskAnalysis.volatility && riskAnalysis.volatility.classification && (
+                <Badge variant="outline">
+                  Vol: {riskAnalysis.volatility.classification}
+                </Badge>
+              )}
             </div>
           )}
           

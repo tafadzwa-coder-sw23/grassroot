@@ -248,7 +248,7 @@ export const SymbolSelector = ({ selectedSymbol, onSymbolSelect }: SymbolSelecto
                       <DollarSign className="w-4 h-4" />
                     </div>
                     <div className="text-left flex-1">
-                      <div className="font-medium">{symbol.display_name}</div>
+                      <div className="font-medium">{symbol.display_name || symbol.symbol}</div>
                       <div className="text-xs text-muted-foreground">
                         {symbol.market_display_name} • {symbol.submarket_display_name}
                       </div>

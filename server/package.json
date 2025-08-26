@@ -11,7 +11,7 @@
   "dependencies": {
     "@deriv/deriv-api": "^1.0.15",
     "asciichart": "^1.5.25",
-    "axios": "^1.6.0",
+    "axios": "^1.11.0",
     "cors": "^2.8.5",
     "date-fns": "^4.1.0",
     "dotenv": "^16.4.5",
